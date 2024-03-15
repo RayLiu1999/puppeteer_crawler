@@ -24,7 +24,6 @@ async function crawler(clrUrl) {
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   await page.goto(clrUrl);
-  // await page.screenshot({ path: "example.png" });
 
   const title = await page.title();
   console.log("title:", title);

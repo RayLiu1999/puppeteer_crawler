@@ -1,4 +1,4 @@
-const connection = require('./connect.js');
+const connectToDatabase = require('./connect.js');
 const puppeteer = require("puppeteer");
 const fs = require("fs");
 
@@ -30,21 +30,18 @@ const CpTypes = {
 }
 
 const CpType = '餐飲業';
-const pageLimit = 5; // 爬取上限頁數
+const pageLimit = 6; // 爬取上限頁數
 const errorLimit = 3; // 爬取錯誤上限
 
-// 取得目前爬取頁數
-connection.query('SELECT page FROM company_search_page_urls ORDER BY page DESC LIMIT 0,1', async (err, results, fields) => {
-  if (err) {
-    console.error('Error connecting to MySQL: ' + err.stack);
-    return;
-  }
-  console.log('Connected to MySQL as id ' + connection.threadId);
+exxute();
 
-  let currentPage = 1;
-  if (results.length > 0) {
-    currentPage = results[0].page + 1;
-  }
+async function exxute() {
+  const conn = await connectToDatabase();
+
+  // 取得目前爬取頁數
+  let [rows, fields] = await conn.query('SELECT page FROM company_search_page_urls ORDER BY page DESC LIMIT 0,1');
+
+  let currentPage = rows.length > 0 ? rows[0].page + 1 : 1;
 
   // 依照頁數爬取
   let nums = [];
@@ -53,36 +50,44 @@ connection.query('SELECT page FROM company_search_page_urls ORDER BY page DESC L
   }
 
   // 爬取公司列表頁面
+  let tasks1 = [];
   if (nums.length > 0) {
-    nums.forEach(async (page) => {
+    for (const page of nums) {
       let clrUrl = listUrl + `indcat=${CpTypes[CpType]}&page=${page}`;
-      await companyPageCrawler(clrUrl, page);
-      await delay(500);
-    });
+      tasks1.push(companyPageCrawler(conn, clrUrl, page));
+      // await companyPageCrawler(conn, clrUrl, page);
+    };
   }
 
-  // 爬公司頁面網址
-  await connection.query(`SELECT url FROM company_search_page_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`, async (err, results, fields) => {
-    if (err) {
-      console.error('Error connecting to MySQL: ' + err.stack);
-      return;
-    }
-    console.log('Connected to MySQL as id ' + connection.threadId);
-
-    results.forEach(async (result) => {
-      console.log('爬公司頁面網址' + result.url);
-      await companyWebisteCrawler(result.url);
-      await delay(500);
+  await runAll(tasks1)
+    .then(() => {
+      console.log('爬取公司列表頁面完成');
+    })
+    .catch((err) => {
+      console.log('爬取公司列表頁面失敗');
     });
-  });
+  
+  // 爬公司頁面網址
+  [rows, fields] = await conn.execute(`SELECT url FROM company_search_page_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
+  
+  let task2 = [];
+  for (const row of rows) {
+    // task2.push(companyWebisteCrawler(conn, row.url));
+    await companyWebisteCrawler(conn, row.url);
+    await delay(1000);
+  };
 
-  // 關閉連線
-  // await connection.end();
-
-});
+  // await runAll(task2)
+  // .then(() => {
+  //   console.log('爬取公司頁面完成');
+  // })
+  // .catch((err) => {
+  //   console.log('爬取公司頁面失敗');
+  // });
+}
 
 // 爬取104公司列表
-async function companyPageCrawler(clrUrl, currentPage) {
+async function companyPageCrawler(conn, clrUrl, currentPage) {
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   await page.goto(clrUrl);
@@ -101,33 +106,23 @@ async function companyPageCrawler(clrUrl, currentPage) {
 
   await browser.close();
 
-  console.log(urlArr);
+  let tempArr = Array(urlArr.length).fill('?', 0, urlArr.length);
+  const [rows, fields] = await conn.execute('SELECT url FROM company_search_page_urls WHERE url IN ('+tempArr.join(',')+')', urlArr);
+  let aleadyCrawledUrls = rows.map((row) => row.url);
   
   urlArr.forEach(async (url) => {
     // 判斷是否已經爬取過
-    await connection.query('SELECT id FROM company_search_page_urls WHERE url = ? LIMIT 0,1', [url], (err, results, fields) => {
-      if (err) {
-        console.error('Error connecting to MySQL: ' + err.stack);
-        return;
-      }
-      console.log('Connected to MySQL as id ' + connection.threadId);
-
-      if (results.length === 0) {
-        // 寫入資料庫
-        connection.query(`INSERT INTO company_search_page_urls (industry_type, page, url) VALUES (?, ?, ?)`,  [CpType, currentPage, url], (err, results, fields) => {
-          if (err) {
-            console.error('Error connecting to MySQL: ' + err.stack);
-            return;
-          }
-          console.log('Connected to MySQL as id ' + connection.threadId);
-        });
-      }
-    });
+    if (!aleadyCrawledUrls.includes(url)) {
+      // 寫入資料庫
+      await conn.execute(`INSERT INTO company_search_page_urls (industry_type, page, url) VALUES (?, ?, ?)`,  [CpType, currentPage, url]);
+    }
   });
+
+  console.log(`爬取第${currentPage}頁完成`);
 };
 
 // 爬取104公司頁面
-async function companyWebisteCrawler(url) {
+async function companyWebisteCrawler(conn, url) {
   // 爬取狀態
   let isCrawled = false;
 
@@ -159,6 +154,8 @@ async function companyWebisteCrawler(url) {
     return arr;
   });
 
+  await browser.close();
+
   // 過濾非官方網站
   companyUrlls = companyUrlls.filter((url) => {
     let isFilter = false;
@@ -171,34 +168,33 @@ async function companyWebisteCrawler(url) {
   });
   
   // 寫入資料庫
-  companyUrlls.forEach((url) => {
-    connection.query('INSERT INTO company_website_urls (url) VALUES (?)',  [url], (err, results, fields) => {
-      if (err) {
-        console.error('Error connecting to MySQL: ' + err.stack);
-        return;
-      }
-      console.log('Connected to MySQL as id ' + connection.threadId);
-    });
-  });
+  let dbTasks = [];
+  for (const url of companyUrlls) {
+    await conn.execute('INSERT INTO company_website_urls (url) VALUES (?)',  [url]);
+  };
+
+  // await runAll(dbTasks);
 
   // 更新爬取狀態
   if (isCrawled) {
-    connection.query('UPDATE company_search_page_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url], (err, results, fields) => {
-      if (err) {
-        console.error('Error connecting to MySQL: ' + err.stack);
-        return;
-      }
-      console.log('Connected to MySQL as id ' + connection.threadId);
-    });
+    await conn.execute('UPDATE company_search_page_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
   } else {
-    connection.query('UPDATE company_search_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url], (err, results, fields) => {
-      if (err) {
-        console.error('Error connecting to MySQL: ' + err.stack);
-        return;
-      }
-      console.log('Connected to MySQL as id ' + connection.threadId);
-    });
+    await conn.execute('UPDATE company_search_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
   }
+
+  // conn.off('error', errorHandler);
+  // conn.release(); // 释放连接
+}
+
+async function runAll(promises) {
+  // 使用 Promise.all 來等待所有的 Promise 完成
+  return Promise.all(promises);
+}
+
+function errorHandler(err) {
+  console.error('Query error:', err);
+  // 在处理完错误后，移除事件监听器
+  conn.off('error', errorHandler);
 }
 
 async function delay(time) {

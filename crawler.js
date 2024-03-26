@@ -72,18 +72,18 @@ async function exxute() {
   
   let task2 = [];
   for (const row of rows) {
-    // task2.push(companyWebisteCrawler(conn, row.url));
-    await companyWebisteCrawler(conn, row.url);
+    task2.push(companyWebisteCrawler(conn, row.url));
+    // await companyWebisteCrawler(conn, row.url);
     await delay(1000);
   };
 
-  // await runAll(task2)
-  // .then(() => {
-  //   console.log('爬取公司頁面完成');
-  // })
-  // .catch((err) => {
-  //   console.log('爬取公司頁面失敗');
-  // });
+  await runAll(task2)
+  .then(() => {
+    console.log('爬取公司頁面完成');
+  })
+  .catch((err) => {
+    console.log('爬取公司頁面失敗');
+  });
 }
 
 // 爬取104公司列表
@@ -140,11 +140,12 @@ async function companyWebisteCrawler(conn, url) {
     isCrawled = true;
   }
 
-  let companyUrlls = await page.evaluate(() => {
+  let companyUrls = await page.evaluate(() => {
     const arr = [];
     const nodeList = document.querySelectorAll(`div.intro-table__head`);
     nodeList.forEach((node) => {
-      if (node.querySelector('h3').textContent === '相關連結') {
+      let title = node.querySelector('h3').textContent;
+      if (title === '相關連結' || title === '公司網址') {
         let urlNodes = node.parentNode.querySelector('.intro-table__data').querySelectorAll('a');
         urlNodes.forEach((urlNode) => {
           arr.push(urlNode.href);
@@ -157,7 +158,7 @@ async function companyWebisteCrawler(conn, url) {
   await browser.close();
 
   // 過濾非官方網站
-  companyUrlls = companyUrlls.filter((url) => {
+  companyUrls = companyUrls.filter((url) => {
     let isFilter = false;
     filterDomain.forEach((domain) => {
       if (url.includes(domain)) {
@@ -169,8 +170,9 @@ async function companyWebisteCrawler(conn, url) {
   
   // 寫入資料庫
   let dbTasks = [];
-  for (const url of companyUrlls) {
-    await conn.execute('INSERT INTO company_website_urls (url) VALUES (?)',  [url]);
+  for (const companyUrl of companyUrls) {
+    console.log(url + ' => ' + companyUrl);
+    await conn.execute('INSERT INTO company_website_urls (url) VALUES (?)',  [companyUrl]);
   };
 
   // await runAll(dbTasks);

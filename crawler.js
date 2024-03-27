@@ -30,7 +30,7 @@ const CpTypes = {
 }
 
 const CpType = '餐飲業';
-const pageLimit = 6; // 爬取上限頁數
+const pageLimit = 50; // 爬取上限頁數
 const errorLimit = 3; // 爬取錯誤上限
 
 execute();
@@ -39,7 +39,7 @@ async function execute() {
   const conn = await connectToDatabase();
 
   // 取得目前爬取頁數
-  let [rows, fields] = await conn.query('SELECT page FROM company_search_page_urls ORDER BY page DESC LIMIT 0,1');
+  let [rows, fields] = await conn.query('SELECT page FROM company_page_urls ORDER BY page DESC LIMIT 0,1');
 
   let currentPage = rows.length > 0 ? rows[0].page + 1 : 1;
 
@@ -53,7 +53,7 @@ async function execute() {
   if (nums.length > 0) {
     for (const page of nums) {
       let clrUrl = listUrl + `indcat=${CpTypes[CpType]}&page=${page}`;
-      await companyPageCrawler(conn, clrUrl, page);
+      await companyListPageCrawler(conn, clrUrl, page);
       await delay(1000);
     };
   }
@@ -61,18 +61,26 @@ async function execute() {
   console.log('爬取公司列表完成');
 
   // 爬公司頁面網址
-  [rows, fields] = await conn.execute(`SELECT url FROM company_search_page_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
+  [rows, fields] = await conn.execute(`SELECT url FROM company_page_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
   
   for (const row of rows) {
-    await companyWebisteCrawler(conn, row.url);
+    await companyPageCrawler(conn, row.url);
     await delay(1000);
   };
 
   console.log('爬取公司頁面完成');
+
+  // 爬取公司網站
+  [rows, fields] = await conn.execute(`SELECT url FROM company_website_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
+
+  for (const row of rows) {
+    await companyWebsiteCrawler(conn, row.url);
+    await delay(1000);
+  }
 }
 
 // 爬取104公司列表
-async function companyPageCrawler(conn, clrUrl, currentPage) {
+async function companyListPageCrawler(conn, clrUrl, currentPage) {
   const browser = await puppeteer.launch();
   const page = await browser.newPage();
   await page.goto(clrUrl);
@@ -89,12 +97,13 @@ async function companyPageCrawler(conn, clrUrl, currentPage) {
     return arr;
   });
 
+  await page.close();
   await browser.close();
 
   let aleadyCrawledUrls = [];
   if (urlArr.length > 0) {
     let tempArr = Array(urlArr.length).fill('?', 0, urlArr.length);
-    const [rows, fields] = await conn.execute('SELECT url FROM company_search_page_urls WHERE url IN ('+tempArr.join(',')+')', urlArr);
+    const [rows, fields] = await conn.execute('SELECT url FROM company_page_urls WHERE url IN ('+tempArr.join(',')+')', urlArr);
     aleadyCrawledUrls = rows.map((row) => row.url);
   }
     
@@ -102,7 +111,7 @@ async function companyPageCrawler(conn, clrUrl, currentPage) {
     // 判斷是否已經爬取過
     if (!aleadyCrawledUrls.includes(url)) {
       // 寫入資料庫
-      await conn.execute(`INSERT INTO company_search_page_urls (industry_type, page, url) VALUES (?, ?, ?)`,  [CpType, currentPage, url]);
+      await conn.execute(`INSERT INTO company_page_urls (industry_type, page, url) VALUES (?, ?, ?)`,  [CpType, currentPage, url]);
     }
   });
 
@@ -112,7 +121,7 @@ async function companyPageCrawler(conn, clrUrl, currentPage) {
 };
 
 // 爬取104公司頁面
-async function companyWebisteCrawler(conn, url) {
+async function companyPageCrawler(conn, url) {
   // 爬取狀態
   let isCrawled = false;
 
@@ -145,6 +154,7 @@ async function companyWebisteCrawler(conn, url) {
     return arr;
   });
 
+  await page.close();
   await browser.close();
 
   // 過濾非官方網站
@@ -165,13 +175,18 @@ async function companyWebisteCrawler(conn, url) {
     let aleadyCrawledUrls = rows.map((row) => row.url);
   
     // 取得104公司表ID
-    const [companyPageRow, fields2] = await conn.execute('SELECT id FROM company_search_page_urls WHERE url = ? LIMIT 0, 1', [url]);
+    const [companyPageRow, fields2] = await conn.execute('SELECT id FROM company_page_urls WHERE url = ? LIMIT 0, 1', [url]);
     const companyPageId = companyPageRow[0].id || 0;
     
     // 寫入資料庫
     let aleadyInsertUrls = [];
     for (const companyUrl of companyUrls) {
       if (!aleadyCrawledUrls.includes(companyUrl) && !aleadyInsertUrls.includes(companyUrl)) {
+        // 長度超過100字元不寫入
+        if (companyUrl.length > 100) {
+          continue;
+        }
+
         console.log(url + ' => ' + companyUrl);
         await conn.execute('INSERT INTO company_website_urls (page_urls_id, url) VALUES (?, ?)',  [companyPageId, companyUrl]);
         aleadyInsertUrls.push(companyUrl);
@@ -181,12 +196,16 @@ async function companyWebisteCrawler(conn, url) {
 
   // 更新爬取狀態
   if (isCrawled) {
-    await conn.execute('UPDATE company_search_page_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
+    await conn.execute('UPDATE company_page_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
   } else {
-    await conn.execute('UPDATE company_search_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
+    await conn.execute('UPDATE company_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
   }
 
   await conn.release();
+}
+
+// 爬取公司網站
+async function companyWebsiteCrawler(conn, url) {
 }
 
 async function runAll(promises) {

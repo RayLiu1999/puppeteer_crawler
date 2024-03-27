@@ -33,9 +33,9 @@ const CpType = '餐飲業';
 const pageLimit = 6; // 爬取上限頁數
 const errorLimit = 3; // 爬取錯誤上限
 
-exxute();
+execute();
 
-async function exxute() {
+async function execute() {
   const conn = await connectToDatabase();
 
   // 取得目前爬取頁數
@@ -50,40 +50,25 @@ async function exxute() {
   }
 
   // 爬取公司列表頁面
-  let tasks1 = [];
   if (nums.length > 0) {
     for (const page of nums) {
       let clrUrl = listUrl + `indcat=${CpTypes[CpType]}&page=${page}`;
-      tasks1.push(companyPageCrawler(conn, clrUrl, page));
-      // await companyPageCrawler(conn, clrUrl, page);
+      await companyPageCrawler(conn, clrUrl, page);
+      await delay(1000);
     };
   }
 
-  await runAll(tasks1)
-    .then(() => {
-      console.log('爬取公司列表頁面完成');
-    })
-    .catch((err) => {
-      console.log('爬取公司列表頁面失敗');
-    });
-  
+  console.log('爬取公司列表完成');
+
   // 爬公司頁面網址
   [rows, fields] = await conn.execute(`SELECT url FROM company_search_page_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
   
-  let task2 = [];
   for (const row of rows) {
-    task2.push(companyWebisteCrawler(conn, row.url));
-    // await companyWebisteCrawler(conn, row.url);
+    await companyWebisteCrawler(conn, row.url);
     await delay(1000);
   };
 
-  await runAll(task2)
-  .then(() => {
-    console.log('爬取公司頁面完成');
-  })
-  .catch((err) => {
-    console.log('爬取公司頁面失敗');
-  });
+  console.log('爬取公司頁面完成');
 }
 
 // 爬取104公司列表
@@ -106,10 +91,13 @@ async function companyPageCrawler(conn, clrUrl, currentPage) {
 
   await browser.close();
 
-  let tempArr = Array(urlArr.length).fill('?', 0, urlArr.length);
-  const [rows, fields] = await conn.execute('SELECT url FROM company_search_page_urls WHERE url IN ('+tempArr.join(',')+')', urlArr);
-  let aleadyCrawledUrls = rows.map((row) => row.url);
-  
+  let aleadyCrawledUrls = [];
+  if (urlArr.length > 0) {
+    let tempArr = Array(urlArr.length).fill('?', 0, urlArr.length);
+    const [rows, fields] = await conn.execute('SELECT url FROM company_search_page_urls WHERE url IN ('+tempArr.join(',')+')', urlArr);
+    aleadyCrawledUrls = rows.map((row) => row.url);
+  }
+    
   urlArr.forEach(async (url) => {
     // 判斷是否已經爬取過
     if (!aleadyCrawledUrls.includes(url)) {
@@ -119,6 +107,8 @@ async function companyPageCrawler(conn, clrUrl, currentPage) {
   });
 
   console.log(`爬取第${currentPage}頁完成`);
+
+  await conn.release();
 };
 
 // 爬取104公司頁面
@@ -167,15 +157,27 @@ async function companyWebisteCrawler(conn, url) {
     });
     return !isFilter;
   });
-  
-  // 寫入資料庫
-  let dbTasks = [];
-  for (const companyUrl of companyUrls) {
-    console.log(url + ' => ' + companyUrl);
-    await conn.execute('INSERT INTO company_website_urls (url) VALUES (?)',  [companyUrl]);
-  };
 
-  // await runAll(dbTasks);
+  if (companyUrls.length > 0) {
+    // 判斷是否已經爬取過
+    let tempArr = Array(companyUrls.length).fill('?', 0, companyUrls.length);
+    const [rows, fields] = await conn.execute('SELECT url FROM company_website_urls WHERE url IN ('+tempArr.join(',')+')', companyUrls);
+    let aleadyCrawledUrls = rows.map((row) => row.url);
+  
+    // 取得104公司表ID
+    const [companyPageRow, fields2] = await conn.execute('SELECT id FROM company_search_page_urls WHERE url = ? LIMIT 0, 1', [url]);
+    const companyPageId = companyPageRow[0].id || 0;
+    
+    // 寫入資料庫
+    let aleadyInsertUrls = [];
+    for (const companyUrl of companyUrls) {
+      if (!aleadyCrawledUrls.includes(companyUrl) && !aleadyInsertUrls.includes(companyUrl)) {
+        console.log(url + ' => ' + companyUrl);
+        await conn.execute('INSERT INTO company_website_urls (page_urls_id, url) VALUES (?, ?)',  [companyPageId, companyUrl]);
+        aleadyInsertUrls.push(companyUrl);
+      }
+    };
+  }
 
   // 更新爬取狀態
   if (isCrawled) {
@@ -184,8 +186,7 @@ async function companyWebisteCrawler(conn, url) {
     await conn.execute('UPDATE company_search_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
   }
 
-  // conn.off('error', errorHandler);
-  // conn.release(); // 释放连接
+  await conn.release();
 }
 
 async function runAll(promises) {

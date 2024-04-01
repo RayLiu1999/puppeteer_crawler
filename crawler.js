@@ -1,6 +1,5 @@
 const connectToDatabase = require('./connect.js');
 const puppeteer = require("puppeteer");
-const fs = require("fs");
 
 // 爬蟲抓取狀態
 const crawlerStatus = {

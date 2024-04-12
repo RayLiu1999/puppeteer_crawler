@@ -26,15 +26,30 @@ const listUrl = 'https://www.104.com.tw/company/search/?';
 const CpTypes = {
   '餐飲業': 1016002000,
   '住宿服務業': 1016001000,
-}
+};
 
 const CpType = '餐飲業';
 const pageLimit = 100; // 爬取上限頁數
 const errorLimit = 3; // 爬取錯誤上限
 
+// 網站類型
+const WebTypes = {
+  'underHTML5': 0,
+  'wordpress': 1,
+  'HTML5': 2,
+  'facebook': 3,
+  'instagram': 4,
+  'twitter': 5,
+  'shoppee': 6,
+  'googleBusiness': 7,
+  'shopline': 8,
+};
+
+let browser;
 execute();
 
 async function execute() {
+  browser = await puppeteer.launch();
   const conn = await connectToDatabase();
 
   // 取得目前爬取頁數
@@ -65,15 +80,13 @@ async function execute() {
   // 爬取公司網站
   [rows, fields] = await conn.execute(`SELECT url FROM company_website_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
 
-  for (const row of rows) {
-    await companyWebsiteCrawler(conn, row.url);
-    await delay(1000);
-  }
+  await companyWebsiteCrawler(conn, rows);
+
+  await browser.close();
 }
 
 // 爬取104公司列表
 async function companyListPageCrawler(conn, nums) {
-  const browser = await puppeteer.launch();
   for (const currentPage of nums) {
     const clrUrl = listUrl + `indcat=${CpTypes[CpType]}&page=${currentPage}`;
     const page = await browser.newPage();
@@ -109,18 +122,12 @@ async function companyListPageCrawler(conn, nums) {
     console.log(`爬取第${currentPage}頁完成`);
   }
 
-  await browser.close();
+  // await browser.close();
   await conn.release();
 };
 
 // 爬取104公司頁面
 async function companyPageCrawler(conn, rows) {
-  // 爬取狀態
-  let isCrawled = false;
-
-  // 爬取公司104頁面
-  const browser = await puppeteer.launch();
-
   for (const row of rows) {
     let page = await browser.newPage();
     const url = row.url;
@@ -132,7 +139,11 @@ async function companyPageCrawler(conn, rows) {
     let response = await page.goto(url);
 
     if (response.status() === 200) {
-      isCrawled = true;
+      await conn.execute('UPDATE company_page_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
+    }
+    else {
+      await conn.execute('UPDATE company_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
+      continue;
     }
 
     let companyUrls = await page.evaluate(() => {
@@ -187,27 +198,112 @@ async function companyPageCrawler(conn, rows) {
       };
     }
 
-    // 更新爬取狀態
-    if (isCrawled) {
-      await conn.execute('UPDATE company_page_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
-    } else {
-      await conn.execute('UPDATE company_page_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
-    }
-
     await page.close();
   };
 
-  await browser.close();
+  // await browser.close();
   await conn.release();
 }
 
 // 爬取公司網站
-async function companyWebsiteCrawler(conn, url) {
+async function companyWebsiteCrawler(conn, rows) {
+    for (const row of rows) {
+      let page = await browser.newPage();
+      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3');
+
+      const url = row.url;
+
+      // 電腦版
+      await page.setViewport({ width: 1920, height: 1080 });
+  
+      try {
+        // 載入網頁
+        const response = await new Promise.race([
+          page.goto(url),
+          new Promise((resolve, reject) => {
+            setTimeout(() => reject(new Error('页面加载超时')), 10000);
+          }),
+        ]);
+      }
+      catch (error) {
+        await conn.execute('UPDATE company_website_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
+        continue;
+      }
+
+      console.log(url);
+      console.log(response.status());
+
+      if (response.status() === 200) {
+        await conn.execute('UPDATE company_website_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
+      }
+      else {
+        await conn.execute('UPDATE company_website_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
+        continue;
+      }
+
+      let emails = await page.evaluate(() => {
+        // 取得所有text中的email
+        const emailReg = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/g;
+        const emails = document.body.textContent.match(emailReg);
+        return emails;
+      });
+
+      // await page.waitForNavigation();
+
+      await delay(500);
+
+      await page.close();
+    }
 }
 
 async function runAll(promises) {
   // 使用 Promise.all 來等待所有的 Promise 完成
   return Promise.all(promises);
+}
+
+function checkWebType(url, html) {
+  const hostName = new URL(url).hostname;
+
+  if (hostName.includes('facebook.com')) {
+    return WebTypes.facebook;
+  }
+
+  if (hostName.includes('instagram.com')) {
+    return WebTypes.instagram;
+  }
+
+  if (hostName.includes('twitter.com')) {
+    return WebTypes.twitter;
+  }
+
+  if (hostName.includes('shopee.tw') || hostName.includes('shopee.com')) {
+    return WebTypes.shoppee;
+  }
+
+  if (hostName.includes('business.site')) {
+    return WebTypes.googleBusiness;
+  }
+
+  if (html.includes('wp-content')) {
+    return WebTypes.wordpress;
+  }
+
+  if (html.includes('shoplineapp')) {
+    return WebTypes.shopline;
+  }
+
+  if (html.includes('<!DOCTYPE html>')) {
+    return WebTypes.HTML5;
+  }
+  else {
+    return WebTypes.underHTML5;
+  }
+}
+
+function getWebInfo(html) {
+  // 取得所有text中的email
+  const emailReg = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/g;
+  const emails = html.match(emailReg);
 }
 
 function errorHandler(err) {

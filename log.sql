@@ -5,9 +5,10 @@ DROP TABLE IF EXISTS `company_information`;
 CREATE TABLE `company_information` (
   `id` bigint(20) NOT NULL AUTO_INCREMENT,
   `website_id` tinyint(4) NOT NULL DEFAULT '0',
-  `industry_type` tinyint(4) NOT NULL,
+  `industry_type` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `web_type` tinyint(4) NOT NULL,
   `email` varchar(50) COLLATE utf8mb4_unicode_ci NOT NULL,
-  `phone` varchar(100) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `phone` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT  NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`)

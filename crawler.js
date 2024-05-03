@@ -78,7 +78,7 @@ async function execute() {
   console.log('爬取公司頁面完成');
 
   // 爬取公司網站
-  [rows, fields] = await conn.execute(`SELECT url FROM company_website_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
+  [rows, fields] = await conn.execute(`SELECT id, url FROM company_website_urls WHERE status = ${crawlerStatus.notCrawler} OR (status = ${crawlerStatus.crawlerError} AND error_count < ${errorLimit})`);
 
   await companyWebsiteCrawler(conn, rows);
 
@@ -205,54 +205,99 @@ async function companyPageCrawler(conn, rows) {
   await conn.release();
 }
 
-// 爬取公司網站
+// 爬取公司網站(改成fetch)
 async function companyWebsiteCrawler(conn, rows) {
     for (const row of rows) {
-      let page = await browser.newPage();
-      await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3');
-
-      const url = row.url;
-
-      // 電腦版
-      await page.setViewport({ width: 1920, height: 1080 });
-  
+      let page;
       try {
+        page = await browser.newPage();
+        await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/58.0.3029.110 Safari/537.3');
+
+        const url = row.url;
+
+        // 電腦版
+        await page.setViewport({ width: 1920, height: 1080 });
+
+        let response;
+
         // 載入網頁
-        const response = await new Promise.race([
+        await Promise.race([
           page.goto(url),
           new Promise((resolve, reject) => {
-            setTimeout(() => reject(new Error('页面加载超时')), 10000);
+            setTimeout(() => reject(new Error('頁面載入超時')), 10000);
           }),
-        ]);
+        ])
+        .then((res) => {
+          response = res;
+        });
+
+        console.log(response.status());
+        console.log(url);
+
+        if (response.status() === 200) {
+          await conn.execute('UPDATE company_website_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
+        }
+        else {
+          await conn.execute('UPDATE company_website_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
+          continue;
+        }
+
+        // page.waitForNavigation();
+
+        await delay(200);
+
+        let emails = await page.evaluate(() => {
+          let body = document.body;
+
+          // 移除所有script
+          body.querySelectorAll('script').forEach((script) => {
+            script.remove();
+          });
+
+          // 取得所有text中的email
+          const emailReg = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/g;
+          const emails = body.textContent.match(emailReg);
+          return emails;
+        });
+
+        let webType = checkWebType(url, await page.content());
+
+        console.log(emails);
+        console.log(webType);
+
+        // 寫入資料庫
+        if (emails && emails.length > 0) {
+          let tempArr = Array(emails.length).fill('?', 0, emails.length);
+          const [rows, fields] = await conn.execute('SELECT email FROM company_information WHERE email IN ('+tempArr.join(',')+')', emails);
+          let aleadyCrawledEmails = rows.map((row) => row.email);
+
+          let aleadyInsertEmails = [];
+          for (const email of emails) {
+            if (!aleadyCrawledEmails.includes(email) && !aleadyInsertEmails.includes(email)) {
+              // 長度超過100字元不寫入
+              if (email.length > 100) {
+                continue;
+              }
+
+              await conn.execute('INSERT INTO company_information (website_id, industry_type, web_type, email) VALUES (?, ?, ?, ?)',  [row.id, CpType, webType, email]);
+              aleadyInsertEmails.push(email);
+            }
+          };
+        }
+
+        // 更新爬取狀態
+        await conn.execute('UPDATE company_website_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
+
+        await delay(200);
+        await page.close();
       }
       catch (error) {
-        await conn.execute('UPDATE company_website_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
+        console.log(error.message);
+        console.log(row.url);
+        await page.close();
+        await conn.execute('UPDATE company_website_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, row.url]);
         continue;
       }
-
-      console.log(url);
-      console.log(response.status());
-
-      if (response.status() === 200) {
-        await conn.execute('UPDATE company_website_urls SET status = ? WHERE url = ?', [crawlerStatus.crawler, url]);
-      }
-      else {
-        await conn.execute('UPDATE company_website_urls SET status = ?, error_count = error_count + 1  WHERE url = ?', [crawlerStatus.crawlerError, url]);
-        continue;
-      }
-
-      let emails = await page.evaluate(() => {
-        // 取得所有text中的email
-        const emailReg = /([a-zA-Z0-9._-]+@[a-zA-Z0-9._-]+\.[a-zA-Z0-9._-]+)/g;
-        const emails = document.body.textContent.match(emailReg);
-        return emails;
-      });
-
-      // await page.waitForNavigation();
-
-      await delay(500);
-
-      await page.close();
     }
 }
 

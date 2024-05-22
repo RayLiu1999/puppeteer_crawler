@@ -34,6 +34,7 @@ DROP TABLE IF EXISTS `company_website_urls`;
 CREATE TABLE `company_website_urls` (
   `id` int(11) NOT NULL AUTO_INCREMENT,
   `page_urls_id` int(11) NOT NULL,
+  `title` varchar(100) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `url` varchar(150) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `status` tinyint(4) NOT NULL DEFAULT '0',
   `error_count` tinyint(4) NOT NULL DEFAULT '0',
